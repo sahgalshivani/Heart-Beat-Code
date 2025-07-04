@@ -1,0 +1,86 @@
+#define USE_ARDUINO_INTERRUPTS true
+#include <PulseSensorPlayground.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// Constants
+const int PULSE_PIN = A0, LED_PIN = 13, BUZZER_PIN = 8;
+const int MIN_BPM = 60, MAX_BPM = 110, INIT_THRESH = 512;
+const int READINGS = 5, THRESH_INTERVAL = 5000;
+const int TIMEOUT = 10000, BEEP_MS = 50;
+
+// BPM smoothing
+int bpm[READINGS] = {}, idx = 0, avgBPM = 0;
+long sum = 0;
+unsigned long lastBeat = 0, lastThreshUpdate = 0;
+
+// Signal min/max for dynamic threshold
+int sigMin = 1023, sigMax = 0;
+
+// LCD and PulseSensor
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+PulseSensorPlayground pulse;
+
+void setup() {
+  Serial.begin(19200);
+  pinMode(LED_PIN, OUTPUT); pinMode(BUZZER_PIN, OUTPUT);
+  lcd.init(); lcd.backlight(); lcd.setCursor(0, 0); lcd.print("Heart Rate");
+  delay(2000); lcd.clear(); lcd.print("BPM:");
+
+  pulse.analogInput(PULSE_PIN);
+  pulse.blinkOnPulse(LED_PIN);
+  pulse.setThreshold(INIT_THRESH);
+
+  if (!pulse.begin()) {
+    lcd.clear(); lcd.print("Sensor Error!");
+    while (true);
+  }
+}
+
+void updateThreshold() {
+  int newThresh = sigMin + (sigMax - sigMin) / 2;
+  pulse.setThreshold(newThresh);
+  sigMin = 1023; sigMax = 0;
+}
+
+void beep() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(BEEP_MS);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+void loop() {
+  int raw = analogRead(PULSE_PIN);
+  sigMin = min(sigMin, raw); sigMax = max(sigMax, raw);
+
+  if (millis() - lastThreshUpdate > THRESH_INTERVAL) {
+    updateThreshold();
+    lastThreshUpdate = millis();
+  }
+
+  if (pulse.sawStartOfBeat()) {
+    int bpmNow = pulse.getBeatsPerMinute();
+    if (bpmNow >= MIN_BPM && bpmNow <= MAX_BPM) {
+      sum -= bpm[idx];
+      bpm[idx] = bpmNow;
+      sum += bpmNow;
+      idx = (idx + 1) % READINGS;
+      avgBPM = sum / READINGS;
+
+      lcd.setCursor(0, 0); lcd.print("BPM:     ");
+      lcd.setCursor(5, 0); lcd.print(avgBPM);
+
+      beep();
+      Serial.print("♥ BPM: "); Serial.println(avgBPM);
+      lastBeat = millis();
+    }
+  }
+
+  if (millis() - lastBeat > TIMEOUT) {
+    avgBPM = 0;
+    lcd.setCursor(0, 0); lcd.print("BPM: ---");
+    digitalWrite(LED_PIN, LOW); digitalWrite(BUZZER_PIN, LOW);
+  }
+
+  delay(20); // ~50Hz sampling
+}
